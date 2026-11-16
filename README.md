@@ -114,8 +114,8 @@ web-search -e brave "anything"
    Writing to a closed pipe exits quietly, so `web-search ... | head` works.
 
 The `--limit` value is a ceiling, not a promise: an engine returns whatever it
-has. Bing caps a non-browser query at 10 results, so ask for more only with
-`brave` or a SearXNG instance that pages.
+has. Bing's RSS output usually stops at 10 results per query and ignores the
+page offset, so ask for more only with `brave` or a SearXNG instance that pages.
 
 ## Limits
 
