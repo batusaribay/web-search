@@ -33,10 +33,10 @@ fn usage(code: i32) -> ! {
     let text = format!(
         "Search the web from the terminal
 
-usage: web-search [options] <query...>
+Usage: web-search [options] <query...>
        web-search -r <n|url> [query...]
 
-examples:
+Examples:
   web-search rust async book
   web-search -n 5 --urls \"rust 2024 edition\"
   web-search -r 2 rust async book
@@ -44,14 +44,14 @@ examples:
   web-search -r https://example.com/
   echo \"who invented unix\" | web-search
 
-engines:
+Engines:
   auto    Try ddg, then bing, then searx (default)
   ddg     DuckDuckGo HTML results, no key needed
   bing    Bing web results, no key needed
   searx   SearXNG instance from --searx-url or SEARX_URL
   brave   Brave Search API, needs BRAVE_API_KEY
 
-options:
+Options:
   -n, --limit <n>       Number of results (default: {DEFAULT_LIMIT}, max: {MAX_LIMIT})
   -e, --engine <name>   Search engine: {names}
   -r, --read <n|url>    Print result n, or the URL, as plain text
@@ -232,18 +232,6 @@ fn terminal_width() -> usize {
         .unwrap_or(DEFAULT_WIDTH)
 }
 
-fn colors_enabled() -> bool {
-    io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none()
-}
-
-fn paint(text: &str, attributes: &str) -> String {
-    if colors_enabled() {
-        format!("\x1b[{attributes}m{text}\x1b[0m")
-    } else {
-        text.to_string()
-    }
-}
-
 pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut lines = Vec::new();
@@ -304,8 +292,8 @@ fn print_results(hits: &[Hit], args: &Args) -> io::Result<()> {
         }
 
         let number = format!("{:>number_width$}.", index + 1);
-        writeln!(out, "{} {}", paint(&number, "2"), paint(&hit.title, "1"))?;
-        writeln!(out, "   {}", paint(&hit.url, "2"))?;
+        writeln!(out, "{number} {}", hit.title)?;
+        writeln!(out, "   {}", hit.url)?;
 
         for line in wrap(&hit.snippet, width.saturating_sub(3)) {
             writeln!(out, "   {line}")?;
@@ -341,7 +329,7 @@ fn main() {
     };
 
     if let Err(message) = result {
-        eprintln!("web-search: {message}");
+        eprintln!("error: {message}");
         process::exit(1);
     }
 }
@@ -350,7 +338,7 @@ fn search_result(args: &Args, options: &Options) -> Result<(), String> {
     let hits = search(args, options)?;
 
     if hits.is_empty() && !args.json && !args.urls {
-        eprintln!("web-search: no results");
+        eprintln!("no results");
         return Ok(());
     }
 
