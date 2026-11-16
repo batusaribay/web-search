@@ -1,17 +1,8 @@
 # web-search
 
+A terminal client for web search and reading.
+
 ![web-search in a terminal](preview.png)
-
-## What it is
-
-A terminal client that searches the web and prints ranked results as title, URL,
-and snippet. It can also read a result as plain text without opening a browser.
-
-## Why this exists
-
-Searching from a terminal usually means either a full-screen browser or piping
-`curl` output through grep. Both lose the shape of the results. This keeps the
-search in the shell: one command, ranked output, and flags for scripts.
 
 ## How it works
 
