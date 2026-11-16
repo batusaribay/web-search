@@ -414,10 +414,6 @@ fn read_result(args: &Args, options: &Options, target: &str) -> Result<(), Strin
         (entry.url.clone(), Some(entry.title.clone()))
     };
 
-    if args.verbose || io::stderr().is_terminal() {
-        eprintln!("web-search: reading {url}");
-    }
-
     let started = Instant::now();
     let read_options = read::ReadOptions {
         timeout: args.timeout,
