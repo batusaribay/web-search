@@ -31,7 +31,7 @@ struct Args {
 
 fn usage(code: i32) -> ! {
     let text = format!(
-        "A terminal client for web search and reading
+        "A Rust CLI for web search and reading
 
 Usage: web-search [OPTIONS] <QUERY>...
        web-search -r <N|URL> [QUERY]...
