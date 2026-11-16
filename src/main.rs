@@ -33,8 +33,8 @@ fn usage(code: i32) -> ! {
     let text = format!(
         "Search the web from the terminal
 
-Usage: web-search [options] <query...>
-       web-search -r <n|url> [query...]
+Usage: web-search [OPTIONS] <QUERY>...
+       web-search -r <N|URL> [QUERY]...
 
 Examples:
   web-search rust async book
@@ -52,17 +52,17 @@ Engines:
   brave   Brave Search API, needs BRAVE_API_KEY
 
 Options:
-  -n, --limit <n>       Number of results (default: {DEFAULT_LIMIT}, max: {MAX_LIMIT})
-  -e, --engine <name>   Search engine: {names}
-  -r, --read <n|url>    Print result n, or the URL, as plain text
+  -n, --limit <N>       Number of results (default: {DEFAULT_LIMIT}, max: {MAX_LIMIT})
+  -e, --engine <NAME>   Search engine: {names}
+  -r, --read <N|URL>    Print result n, or the URL, as plain text
       --no-reader       Do not retry client-side pages through r.jina.ai
-      --searx-url <url> SearXNG base URL (default: public instances)
+      --searx-url <URL> SearXNG base URL (default: public instances)
       --json            Print results as JSON
       --urls            Print only the result URLs
-  -t, --timeout <secs>  Request timeout in seconds (default: {DEFAULT_TIMEOUT_SECS})
+  -t, --timeout <SECS>  Request timeout in seconds (default: {DEFAULT_TIMEOUT_SECS})
   -v, --verbose         Print engine and timing to stderr
-  -h, --help            Show this help
-  -V, --version         Show the version
+  -h, --help            Print help
+  -V, --version         Print version
 ",
         names = Engine::NAMES
     );
