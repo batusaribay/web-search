@@ -82,8 +82,17 @@ fn parse_args_from(arguments: Vec<String>) -> Args {
     };
     let mut words = Vec::new();
     let mut argv = arguments.into_iter();
+    let mut end_of_options = false;
 
     while let Some(arg) = argv.next() {
+        if end_of_options {
+            words.push(arg);
+            continue;
+        }
+        if arg == "--" {
+            end_of_options = true;
+            continue;
+        }
         let (flag, inline) = match arg.split_once('=') {
             Some((flag, value)) if flag.starts_with('-') => {
                 (flag.to_string(), Some(value.to_string()))
@@ -347,6 +356,13 @@ mod tests {
         let args = parse_args_from(vec!["--json".into(), "-".into(), "x".into()]);
         assert!(args.json);
         assert_eq!(args.query, "- x");
+    }
+
+    #[test]
+    fn double_dash_ends_option_parsing() {
+        let args = parse_args_from(vec!["-n".into(), "2".into(), "--".into(), "-n".into()]);
+        assert_eq!(args.limit, 2);
+        assert_eq!(args.query, "-n");
     }
 
     #[test]

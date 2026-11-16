@@ -377,16 +377,21 @@ fn searx(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
     };
 
     let mut failures = Vec::new();
+    let mut answered = false;
 
     for base in instances {
         match searx_instance(&base, query, options) {
             Ok(hits) if !hits.is_empty() => return Ok(hits),
-            Ok(_) => failures.push(format!("{base}: no results")),
+            Ok(_) => answered = true,
             Err(message) => failures.push(format!("{base}: {message}")),
         }
     }
 
-    Err(failures.join("; "))
+    if answered {
+        Ok(Vec::new())
+    } else {
+        Err(failures.join("; "))
+    }
 }
 
 fn searx_instance(base: &str, query: &str, options: &Options) -> Result<Vec<Hit>, String> {
