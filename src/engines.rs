@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::env;
-use std::io::Read;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -10,12 +9,7 @@ use scraper::{Html, Selector};
 use serde_json::Value;
 use url::Url;
 
-const MAX_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
-const ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
-
-// The HTML endpoints reject unfamiliar agents outright, so requests look like a
-// browser. This is the same compromise every terminal search client makes.
-const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0";
+use crate::http;
 
 const SEARX_INSTANCES: [&str; 4] = [
     "https://searx.be",
@@ -107,61 +101,12 @@ fn search_auto(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
     }
 }
 
-fn agent(timeout: Duration) -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout(timeout)
-        .user_agent(USER_AGENT)
-        .build()
-}
-
-fn fetch(request: ureq::Request) -> Result<String, String> {
-    let result = request.set("Accept-Language", ACCEPT_LANGUAGE).call();
-    handle(result)
-}
-
-fn fetch_form(url: &str, timeout: Duration, form: &[(&str, &str)]) -> Result<String, String> {
-    let request = agent(timeout)
-        .post(url)
-        .set("Accept", "text/html,application/xhtml+xml")
-        .set("Accept-Language", ACCEPT_LANGUAGE);
-    let result = request.send_form(form);
-    handle(result)
-}
-
-fn handle(result: Result<ureq::Response, ureq::Error>) -> Result<String, String> {
-    match result {
-        Ok(response) => read_body(response),
-        Err(ureq::Error::Status(code, response)) => {
-            let text = response.status_text();
-            if text.is_empty() {
-                Err(format!("HTTP {code}"))
-            } else {
-                Err(format!("HTTP {code} {text}"))
-            }
-        }
-        Err(ureq::Error::Transport(error)) => match error.message() {
-            Some(message) => Err(format!("request failed: {message}")),
-            None => Err(format!("request failed: {}", error.kind())),
-        },
-    }
-}
-
-fn read_body(response: ureq::Response) -> Result<String, String> {
-    let mut body = String::new();
-    response
-        .into_reader()
-        .take(MAX_RESPONSE_BYTES)
-        .read_to_string(&mut body)
-        .map_err(|error| format!("could not read response: {error}"))?;
-    Ok(body)
-}
-
 fn encode(query: &str) -> String {
     url::form_urlencoded::byte_serialize(query.as_bytes()).collect()
 }
 
 fn bing(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
-    let agent = agent(options.timeout);
+    let client = http::client(options.timeout);
     let mut hits: Vec<Hit> = Vec::new();
     let mut seen = HashSet::new();
     let mut first = 1;
@@ -171,11 +116,12 @@ fn bing(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
             "https://www.bing.com/search?q={}&format=rss&count=10&first={first}",
             encode(query)
         );
-        let request = agent.get(&url).set(
-            "Accept",
+        let body = http::get(
+            &client,
+            &url,
             "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
-        );
-        let body = fetch(request)?;
+        )?
+        .body;
         let page = parse_bing_rss(&body)?;
         let before = hits.len();
 
@@ -300,11 +246,13 @@ fn resolve_reference(reference: &BytesRef) -> String {
 }
 
 fn duckduckgo(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
-    let body = fetch_form(
+    let client = http::client(options.timeout);
+    let body = http::post_form(
+        &client,
         "https://html.duckduckgo.com/html/",
-        options.timeout,
         &[("q", query), ("kl", "us-en")],
-    )?;
+    )?
+    .body;
 
     let hits = parse_duckduckgo_html(&body);
     if hits.is_empty() && is_bot_check(&body) {
@@ -396,7 +344,7 @@ fn searx(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
 
 fn searx_instance(base: &str, query: &str, options: &Options) -> Result<Vec<Hit>, String> {
     let base = base.trim_end_matches('/');
-    let agent = agent(options.timeout);
+    let client = http::client(options.timeout);
     let mut hits: Vec<Hit> = Vec::new();
     let mut seen = HashSet::new();
     let mut page = 1;
@@ -406,7 +354,7 @@ fn searx_instance(base: &str, query: &str, options: &Options) -> Result<Vec<Hit>
             "{base}/search?q={}&format=json&language=en&safesearch=0&pageno={page}",
             encode(query)
         );
-        let body = fetch(agent.get(&url).set("Accept", "application/json"))?;
+        let body = http::get(&client, &url, "application/json")?.body;
         let results = parse_searx_json(&body)?;
 
         let before = hits.len();
@@ -475,7 +423,7 @@ fn brave(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
             "BRAVE_API_KEY is not set; create a key at https://brave.com/search/api/".to_string()
         })?;
 
-    let agent = agent(options.timeout);
+    let client = http::client(options.timeout);
     let mut hits: Vec<Hit> = Vec::new();
     let mut seen = HashSet::new();
     let mut offset = 0;
@@ -486,12 +434,13 @@ fn brave(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
             "https://api.search.brave.com/res/v1/web/search?q={}&count={count}&offset={offset}",
             encode(query)
         );
-        let body = fetch(
-            agent
-                .get(&url)
-                .set("Accept", "application/json")
-                .set("X-Subscription-Token", &key),
-        )?;
+        let body = http::get_with(
+            &client,
+            &url,
+            "application/json",
+            &[("X-Subscription-Token", &key)],
+        )?
+        .body;
         let results = parse_brave_json(&body)?;
 
         let before = hits.len();
