@@ -45,7 +45,7 @@ Examples:
   echo \"who invented unix\" | web-search
 
 Engines:
-  auto    Try ddg, then bing, then a configured searx (default)
+  auto    Try ddg, then brave (with a key), then bing, then configured searx
   ddg     DuckDuckGo HTML results, no key needed
   bing    Bing web results, no key needed
   searx   SearXNG instance from --searx-url or SEARX_URL

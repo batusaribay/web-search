@@ -7,9 +7,14 @@ use serde_json::{Value, json};
 
 use crate::engines::Hit;
 
-/// DuckDuckGo bot-checks are IP-based and temporary. After one, stay away from
-/// it for a while instead of hitting it on every search and extending the block.
-const DDG_COOLDOWN: Duration = Duration::from_secs(15 * 60);
+/// DuckDuckGo bot-checks are IP-based and temporary. Its block is a sliding
+/// window that needs roughly an hour without requests to clear, so retrying
+/// sooner only extends it.
+const DDG_COOLDOWN: Duration = Duration::from_secs(65 * 60);
+
+/// A real visitor does not send two searches in the same second. Stop scripts
+/// and repeated runs from turning into the burst DDG looks for.
+const DDG_MIN_GAP: Duration = Duration::from_secs(3);
 
 /// The last result list, so a result number can be read after the search that
 /// produced it. Without it, `web-search -r 2` would need the query again and
@@ -96,7 +101,29 @@ fn load_from(path: &Path) -> Option<Saved> {
 }
 
 pub fn mark_ddg_blocked() {
-    let Some(path) = ddg_cooldown_path() else {
+    write_timestamp("ddg-blocked");
+}
+
+pub fn ddg_cooldown_remaining() -> Option<Duration> {
+    let blocked_at = read_timestamp("ddg-blocked")?;
+    cooldown_remaining_at(unix_now(), blocked_at)
+}
+
+pub fn mark_ddg_request() {
+    write_timestamp("ddg-last");
+}
+
+pub fn ddg_request_wait() -> Option<Duration> {
+    let last = read_timestamp("ddg-last")?;
+    request_wait_at(unix_now(), last)
+}
+
+fn state_path(name: &str) -> Option<PathBuf> {
+    Some(path()?.with_file_name(name))
+}
+
+fn write_timestamp(name: &str) {
+    let Some(path) = state_path(name) else {
         return;
     };
     if let Some(parent) = path.parent() {
@@ -105,20 +132,24 @@ pub fn mark_ddg_blocked() {
     let _ = fs::write(path, unix_now().to_string());
 }
 
-pub fn ddg_cooldown_remaining() -> Option<Duration> {
-    let path = ddg_cooldown_path()?;
-    let blocked_at: u64 = fs::read_to_string(path).ok()?.trim().parse().ok()?;
-    cooldown_remaining_at(unix_now(), blocked_at)
-}
-
-fn ddg_cooldown_path() -> Option<PathBuf> {
-    Some(path()?.with_file_name("ddg-blocked"))
+fn read_timestamp(name: &str) -> Option<u64> {
+    fs::read_to_string(state_path(name)?)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 fn cooldown_remaining_at(now: u64, blocked_at: u64) -> Option<Duration> {
     let elapsed = now.saturating_sub(blocked_at);
     let cooldown = DDG_COOLDOWN.as_secs();
     (elapsed < cooldown).then(|| Duration::from_secs(cooldown - elapsed))
+}
+
+fn request_wait_at(now: u64, last: u64) -> Option<Duration> {
+    let elapsed = now.saturating_sub(last);
+    let gap = DDG_MIN_GAP.as_secs();
+    (elapsed < gap).then(|| Duration::from_secs(gap - elapsed))
 }
 
 fn unix_now() -> u64 {
@@ -182,13 +213,21 @@ mod tests {
     fn ddg_cooldown_expires() {
         assert_eq!(
             cooldown_remaining_at(1_000, 1_000),
-            Some(Duration::from_secs(900))
+            Some(Duration::from_secs(3_900))
         );
         assert_eq!(
-            cooldown_remaining_at(1_600, 1_000),
-            Some(Duration::from_secs(300))
+            cooldown_remaining_at(1_000 + 3_300, 1_000),
+            Some(Duration::from_secs(600))
         );
-        assert_eq!(cooldown_remaining_at(1_900, 1_000), None);
+        assert_eq!(cooldown_remaining_at(1_000 + 3_900, 1_000), None);
         assert_eq!(cooldown_remaining_at(9_000, 1_000), None);
+    }
+
+    #[test]
+    fn ddg_requests_are_paced() {
+        assert_eq!(request_wait_at(1_000, 1_000), Some(Duration::from_secs(3)));
+        assert_eq!(request_wait_at(1_002, 1_000), Some(Duration::from_secs(1)));
+        assert_eq!(request_wait_at(1_003, 1_000), None);
+        assert_eq!(request_wait_at(5_000, 1_000), None);
     }
 }

@@ -99,12 +99,20 @@ fn searx_configured(options: &Options) -> bool {
         || env::var("SEARX_URL").is_ok_and(|url| !url.trim().is_empty())
 }
 
+fn brave_configured() -> bool {
+    env::var("BRAVE_API_KEY").is_ok_and(|key| !key.trim().is_empty())
+}
+
 fn search_auto(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
     let mut failures = Vec::new();
     let mut empty = None;
     let mut empty_engine = None;
 
-    let mut engines = vec![Engine::DuckDuckGo, Engine::Bing];
+    let mut engines = vec![Engine::DuckDuckGo];
+    if brave_configured() {
+        engines.push(Engine::Brave);
+    }
+    engines.push(Engine::Bing);
     if searx_configured(options) {
         engines.push(Engine::Searx);
     }
@@ -322,6 +330,11 @@ fn duckduckgo(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
         ));
     }
 
+    if let Some(wait) = cache::ddg_request_wait() {
+        std::thread::sleep(wait);
+    }
+    cache::mark_ddg_request();
+
     match duckduckgo_html(query, options) {
         Ok(hits) if !hits.is_empty() => Ok(hits),
         // A clean empty page is a real answer. Do not make a second request.
@@ -349,7 +362,8 @@ fn duckduckgo_html(query: &str, options: &Options) -> Result<Vec<Hit>, DdgError>
     let body = http::post_form(
         &client,
         "https://html.duckduckgo.com/html/",
-        &[("q", query), ("kl", "us-en")],
+        "https://html.duckduckgo.com/",
+        &[("q", query), ("b", ""), ("kl", "us-en")],
     )
     .map_err(DdgError::Transport)?
     .body;
@@ -367,6 +381,7 @@ fn duckduckgo_lite(query: &str, options: &Options) -> Result<Vec<Hit>, DdgError>
     let body = http::post_form(
         &client,
         "https://lite.duckduckgo.com/lite/",
+        "https://lite.duckduckgo.com/",
         &[("q", query), ("kl", "us-en")],
     )
     .map_err(DdgError::Transport)?

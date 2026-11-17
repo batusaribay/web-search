@@ -76,10 +76,11 @@ Reading keeps only that list; queries are not logged.
 | `searx` | SearXNG JSON; set `--searx-url` or `SEARX_URL`. |
 | `brave` | Brave API; set `BRAVE_API_KEY`. |
 
-`auto` tries DuckDuckGo, then Bing, then a SearXNG instance when `--searx-url`
-or `SEARX_URL` is set. Bing results that share no word with the query are
-dropped, so a zero-result page cannot turn into unrelated hits. Use `-v` to see
-which engine answered and why the others were skipped.
+`auto` tries DuckDuckGo, then the Brave API when `BRAVE_API_KEY` is set, then
+Bing, then a SearXNG instance when `--searx-url` or `SEARX_URL` is set. Bing
+results that share no word with the query are dropped, so a zero-result page
+cannot turn into unrelated hits. Use `-v` to see which engine answered and why
+the others were skipped.
 
 ### Limits
 
@@ -93,9 +94,11 @@ use `--engine bing`.
 
 DuckDuckGo can also bot-check an IP after repeated searches. The check is
 temporary; `auto` reports it and falls back to Bing. After a bot check or a
-failed connection, DuckDuckGo is skipped for 15 minutes so retries do not
-extend the block. To retry sooner, remove `ddg-blocked` from the cache
-directory (`~/.cache/web-search/` by default).
+failed connection, DuckDuckGo is skipped for 65 minutes, because its block is a
+sliding window that needs about an hour of silence to clear. Requests are also
+spaced at least 3 seconds apart. To retry sooner, remove `ddg-blocked` from the
+cache directory (`~/.cache/web-search/` by default), but retrying resets the
+window.
 
 ## Install
 

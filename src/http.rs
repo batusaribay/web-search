@@ -49,12 +49,28 @@ pub fn get_with(
 pub fn post_form(
     client: &ureq::Agent,
     url: &str,
+    referer: &str,
     form: &[(&str, &str)],
 ) -> Result<Fetched, String> {
+    // DuckDuckGo's no-JS form is meant to be submitted by a browser, so send
+    // the headers a browser sends. Missing Sec-Fetch/Referer headers make the
+    // request look like a scraper before the IP reputation even matters.
+    let origin = referer.trim_end_matches('/');
     let request = client
         .post(url)
-        .set("Accept", "text/html,application/xhtml+xml")
-        .set("Accept-Language", ACCEPT_LANGUAGE);
+        .set(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .set("Accept-Language", ACCEPT_LANGUAGE)
+        .set("Cache-Control", "max-age=0")
+        .set("Origin", origin)
+        .set("Referer", referer)
+        .set("Sec-Fetch-Dest", "document")
+        .set("Sec-Fetch-Mode", "navigate")
+        .set("Sec-Fetch-Site", "same-origin")
+        .set("Sec-Fetch-User", "?1")
+        .set("Upgrade-Insecure-Requests", "1");
     handle(request.send_form(form))
 }
 
@@ -115,7 +131,11 @@ fn handle(result: Result<ureq::Response, ureq::Error>) -> Result<Fetched, String
 
 #[cfg(test)]
 mod tests {
-    use super::is_binary;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    use super::*;
 
     #[test]
     fn detects_binary_payloads() {
@@ -123,5 +143,79 @@ mod tests {
         assert!(is_binary("image/png; charset=binary"));
         assert!(!is_binary("text/html; charset=utf-8"));
         assert!(!is_binary(""));
+    }
+
+    #[test]
+    fn sends_a_browser_like_form() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("read timeout");
+
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            let header_end = loop {
+                let read = stream.read(&mut buffer).expect("read headers");
+                assert!(read > 0, "client closed before sending headers");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break end + 4;
+                }
+            };
+
+            let headers = String::from_utf8_lossy(&request[..header_end]).to_string();
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+
+            let mut body = request[header_end..].to_vec();
+            while body.len() < length {
+                let read = stream.read(&mut buffer).expect("read body");
+                if read == 0 {
+                    break;
+                }
+                body.extend_from_slice(&buffer[..read]);
+            }
+
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .expect("write response");
+
+            format!("{headers}\r\n{}", String::from_utf8_lossy(&body))
+        });
+
+        let referer = format!("http://{address}/");
+        let client = client(Duration::from_secs(5));
+        let fetched = post_form(
+            &client,
+            &format!("http://{address}/search"),
+            &referer,
+            &[("q", "dashed filename"), ("b", ""), ("kl", "us-en")],
+        )
+        .expect("post form");
+        assert_eq!(fetched.body, "ok");
+
+        let request = server.join().expect("server").to_ascii_lowercase();
+        assert!(request.contains("sec-fetch-dest: document"));
+        assert!(request.contains("sec-fetch-mode: navigate"));
+        assert!(request.contains("sec-fetch-site: same-origin"));
+        assert!(request.contains("sec-fetch-user: ?1"));
+        assert!(request.contains(&format!("referer: {referer}").to_ascii_lowercase()));
+        assert!(request.contains(&format!(
+            "origin: {}",
+            referer.trim_end_matches('/').to_ascii_lowercase()
+        )));
+        assert!(request.contains("q=dashed+filename"));
+        assert!(request.contains("b="));
+        assert!(request.contains("kl=us-en"));
     }
 }
