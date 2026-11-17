@@ -71,18 +71,31 @@ Reading keeps only that list; queries are not logged.
 
 | Engine | Source |
 | --- | --- |
-| `ddg` | DuckDuckGo HTML. |
-| `bing` | Bing RSS. |
+| `ddg` | DuckDuckGo HTML, with the lite endpoint as a fallback. |
+| `bing` | Bing RSS, pinned to the `en-US` market. |
 | `searx` | SearXNG JSON; set `--searx-url` or `SEARX_URL`. |
 | `brave` | Brave API; set `BRAVE_API_KEY`. |
 
-`auto` tries DuckDuckGo, Bing, then SearXNG.
+`auto` tries DuckDuckGo, then Bing, then a SearXNG instance when `--searx-url`
+or `SEARX_URL` is set. Bing results that share no word with the query are
+dropped, so a zero-result page cannot turn into unrelated hits. Use `-v` to see
+which engine answered and why the others were skipped.
 
 ### Limits
 
 The HTML endpoints are not APIs. They can return bot checks or rate limits; use
 the Brave API or a SearXNG instance for regular use. JavaScript-only pages still
 read poorly, and PDFs are reported as unreadable.
+
+If DuckDuckGo always times out on a VPN or Cloudflare WARP, run
+`warp-cli tunnel host add duckduckgo.com` to route it outside the tunnel, or
+use `--engine bing`.
+
+DuckDuckGo can also bot-check an IP after repeated searches. The check is
+temporary; `auto` reports it and falls back to Bing. After a bot check or a
+failed connection, DuckDuckGo is skipped for 15 minutes so retries do not
+extend the block. To retry sooner, remove `ddg-blocked` from the cache
+directory (`~/.cache/web-search/` by default).
 
 ## Install
 

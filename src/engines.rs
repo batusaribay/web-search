@@ -9,6 +9,7 @@ use scraper::{Html, Selector};
 use serde_json::Value;
 use url::Url;
 
+use crate::cache;
 use crate::http;
 
 const SEARX_INSTANCES: [&str; 4] = [
@@ -24,6 +25,12 @@ static RESULT_LINK: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("a.result__a").expect("valid result link selector"));
 static RESULT_SNIPPET: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse(".result__snippet").expect("valid snippet selector"));
+static LITE_LINK: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("a.result-link").expect("valid lite result link selector"));
+static LITE_SNIPPET: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("td.result-snippet").expect("valid lite snippet selector"));
+static ROW: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("tr").expect("valid row selector"));
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hit {
@@ -71,6 +78,7 @@ pub struct Options {
     pub limit: usize,
     pub timeout: Duration,
     pub searx_url: Option<String>,
+    pub verbose: bool,
 }
 
 pub fn search(engine: Engine, query: &str, options: &Options) -> Result<Vec<Hit>, String> {
@@ -83,26 +91,72 @@ pub fn search(engine: Engine, query: &str, options: &Options) -> Result<Vec<Hit>
     }
 }
 
+fn searx_configured(options: &Options) -> bool {
+    options
+        .searx_url
+        .as_ref()
+        .is_some_and(|url| !url.trim().is_empty())
+        || env::var("SEARX_URL").is_ok_and(|url| !url.trim().is_empty())
+}
+
 fn search_auto(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
     let mut failures = Vec::new();
     let mut empty = None;
+    let mut empty_engine = None;
 
-    for engine in [Engine::DuckDuckGo, Engine::Bing, Engine::Searx] {
+    let mut engines = vec![Engine::DuckDuckGo, Engine::Bing];
+    if searx_configured(options) {
+        engines.push(Engine::Searx);
+    }
+
+    for engine in engines {
+        if options.verbose {
+            eprintln!("web-search: trying {}", engine.name());
+        }
         match search(engine, query, options) {
-            Ok(hits) if !hits.is_empty() => return Ok(hits),
-            Ok(hits) => empty = Some(hits),
-            Err(message) => failures.push(format!("{}: {message}", engine.name())),
+            Ok(hits) if !hits.is_empty() => {
+                if options.verbose && engine != Engine::DuckDuckGo {
+                    eprintln!("web-search: {} returned results", engine.name());
+                }
+                return Ok(hits);
+            }
+            Ok(_) => {
+                if options.verbose {
+                    eprintln!("web-search: {}: no results", engine.name());
+                }
+                empty = Some(Vec::new());
+                empty_engine = Some(engine.name());
+            }
+            Err(message) => {
+                if options.verbose {
+                    eprintln!("web-search: {}: {message}", engine.name());
+                }
+                failures.push(format!("{}: {message}", engine.name()));
+            }
         }
     }
 
     match empty {
-        Some(hits) => Ok(hits),
+        Some(hits) if failures.is_empty() => Ok(hits),
+        Some(_) => {
+            if let Some(engine) = empty_engine {
+                failures.push(format!("{engine}: no results"));
+            }
+            Err(failures.join("; "))
+        }
         None => Err(failures.join("; ")),
     }
 }
 
 fn encode(query: &str) -> String {
     url::form_urlencoded::byte_serialize(query.as_bytes()).collect()
+}
+
+fn bing_url(query: &str, first: usize) -> String {
+    format!(
+        "https://www.bing.com/search?q={}&format=rss&count=10&first={first}&mkt=en-US&setlang=en&cc=us",
+        encode(query)
+    )
 }
 
 fn bing(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
@@ -112,17 +166,14 @@ fn bing(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
     let mut first = 1;
 
     while hits.len() < options.limit && first <= 41 {
-        let url = format!(
-            "https://www.bing.com/search?q={}&format=rss&count=10&first={first}",
-            encode(query)
-        );
+        let url = bing_url(query, first);
         let body = http::get(
             &client,
             &url,
             "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
         )?
         .body;
-        let page = parse_bing_rss(&body)?;
+        let page = keep_relevant(query, parse_bing_rss(&body)?);
         let before = hits.len();
 
         for hit in page {
@@ -245,26 +296,96 @@ fn resolve_reference(reference: &BytesRef) -> String {
     }
 }
 
+#[derive(Debug)]
+enum DdgError {
+    BotCheck,
+    Transport(String),
+}
+
+impl DdgError {
+    fn message(&self) -> String {
+        match self {
+            Self::BotCheck => {
+                "DuckDuckGo is bot-checking this IP (temporary); wait a bit or use --engine bing"
+                    .to_string()
+            }
+            Self::Transport(message) => message.clone(),
+        }
+    }
+}
+
 fn duckduckgo(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
+    if let Some(remaining) = cache::ddg_cooldown_remaining() {
+        let minutes = remaining.as_secs().div_ceil(60);
+        return Err(format!(
+            "DuckDuckGo is cooling down after a block ({minutes} min left); try --engine bing"
+        ));
+    }
+
+    match duckduckgo_html(query, options) {
+        Ok(hits) if !hits.is_empty() => Ok(hits),
+        // A clean empty page is a real answer. Do not make a second request.
+        Ok(_) => Ok(Vec::new()),
+        Err(DdgError::BotCheck) => {
+            cache::mark_ddg_blocked();
+            Err(DdgError::BotCheck.message())
+        }
+        Err(DdgError::Transport(html_error)) => match duckduckgo_lite(query, options) {
+            Ok(hits) => Ok(hits),
+            Err(DdgError::BotCheck) => {
+                cache::mark_ddg_blocked();
+                Err(DdgError::BotCheck.message())
+            }
+            Err(DdgError::Transport(lite_error)) => {
+                cache::mark_ddg_blocked();
+                Err(format!("html: {html_error}; lite: {lite_error}"))
+            }
+        },
+    }
+}
+
+fn duckduckgo_html(query: &str, options: &Options) -> Result<Vec<Hit>, DdgError> {
     let client = http::client(options.timeout);
     let body = http::post_form(
         &client,
         "https://html.duckduckgo.com/html/",
         &[("q", query), ("kl", "us-en")],
-    )?
+    )
+    .map_err(DdgError::Transport)?
     .body;
 
     let hits = parse_duckduckgo_html(&body);
     if hits.is_empty() && is_bot_check(&body) {
-        return Err("blocked by DuckDuckGo's bot check; try --engine bing".to_string());
+        return Err(DdgError::BotCheck);
     }
 
+    Ok(dedupe(hits, options.limit))
+}
+
+fn duckduckgo_lite(query: &str, options: &Options) -> Result<Vec<Hit>, DdgError> {
+    let client = http::client(options.timeout);
+    let body = http::post_form(
+        &client,
+        "https://lite.duckduckgo.com/lite/",
+        &[("q", query), ("kl", "us-en")],
+    )
+    .map_err(DdgError::Transport)?
+    .body;
+
+    let hits = parse_duckduckgo_lite(&body);
+    if hits.is_empty() && is_bot_check(&body) {
+        return Err(DdgError::BotCheck);
+    }
+
+    Ok(dedupe(hits, options.limit))
+}
+
+fn dedupe(hits: Vec<Hit>, limit: usize) -> Vec<Hit> {
     let mut seen = HashSet::new();
-    Ok(hits
-        .into_iter()
+    hits.into_iter()
         .filter(|hit| seen.insert(hit.url.clone()))
-        .take(options.limit)
-        .collect())
+        .take(limit)
+        .collect()
 }
 
 fn is_bot_check(html: &str) -> bool {
@@ -310,6 +431,73 @@ fn parse_duckduckgo_html(html: &str) -> Vec<Hit> {
     }
 
     hits
+}
+
+fn parse_duckduckgo_lite(html: &str) -> Vec<Hit> {
+    let document = Html::parse_document(html);
+    let rows: Vec<_> = document.select(&ROW).collect();
+    let mut hits = Vec::new();
+
+    for (index, row) in rows.iter().enumerate() {
+        let Some(link) = row.select(&LITE_LINK).next() else {
+            continue;
+        };
+        let Some(href) = link.value().attr("href") else {
+            continue;
+        };
+
+        let title = clean_text(&link.text().collect::<String>());
+        let url = absolute_url(href);
+        if title.is_empty() || url.is_empty() {
+            continue;
+        }
+
+        let snippet = rows[index + 1..]
+            .iter()
+            .take_while(|row| row.select(&LITE_LINK).next().is_none())
+            .find_map(|row| row.select(&LITE_SNIPPET).next())
+            .map(|element| clean_text(&element.text().collect::<String>()))
+            .unwrap_or_default();
+
+        hits.push(Hit {
+            title,
+            url,
+            snippet,
+            engine: "ddg",
+        });
+    }
+
+    hits
+}
+
+fn query_terms(query: &str) -> Vec<String> {
+    const STOPWORDS: [&str; 25] = [
+        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how", "in", "is", "it",
+        "of", "on", "or", "the", "to", "what", "when", "where", "which", "with", "your",
+    ];
+
+    query
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| term.chars().count() >= 2)
+        .map(str::to_lowercase)
+        .filter(|term| !STOPWORDS.contains(&term.as_str()))
+        .collect()
+}
+
+/// Bing fills zero-result pages with unrelated results. Keep only hits that
+/// share a meaningful word with the query.
+fn keep_relevant(query: &str, hits: Vec<Hit>) -> Vec<Hit> {
+    let terms = query_terms(query);
+    if terms.is_empty() {
+        return hits;
+    }
+
+    hits.into_iter()
+        .filter(|hit| {
+            let haystack = format!("{} {} {}", hit.title, hit.snippet, hit.url).to_lowercase();
+            terms.iter().any(|term| haystack.contains(term))
+        })
+        .collect()
 }
 
 fn searx(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
@@ -654,6 +842,61 @@ mod tests {
         assert!(parse_bing_rss(xml).unwrap().is_empty());
     }
 
+    fn hit(title: &str, url: &str, snippet: &str) -> Hit {
+        Hit {
+            title: title.to_string(),
+            url: url.to_string(),
+            snippet: snippet.to_string(),
+            engine: "bing",
+        }
+    }
+
+    #[test]
+    fn bing_url_pins_the_market() {
+        let url = bing_url("dashed filename", 11);
+        assert!(url.contains("q=dashed+filename"));
+        assert!(url.contains("first=11"));
+        assert!(url.contains("mkt=en-US"));
+        assert!(url.contains("setlang=en"));
+        assert!(url.contains("cc=us"));
+    }
+
+    #[test]
+    fn drops_results_that_do_not_match_the_query() {
+        let hits = vec![
+            hit(
+                "Google Docs",
+                "https://docs.google.com/",
+                "Create and edit web-based documents.",
+            ),
+            hit(
+                "Dashed Filename in Linux",
+                "https://example.com/dashed-filename",
+                "Names starting with a dash break commands.",
+            ),
+        ];
+
+        let hits = keep_relevant("dashed filename", hits);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Dashed Filename in Linux");
+    }
+
+    #[test]
+    fn keeps_results_matching_any_meaningful_word() {
+        let hits = vec![hit(
+            "Async Rust",
+            "https://example.com/",
+            "Write concurrent code.",
+        )];
+        assert_eq!(keep_relevant("rust async book", hits).len(), 1);
+    }
+
+    #[test]
+    fn does_not_filter_a_query_made_only_of_stopwords() {
+        let hits = vec![hit("Anything", "https://example.com/", "At all.")];
+        assert_eq!(keep_relevant("the of to", hits).len(), 1);
+    }
+
     #[test]
     fn parses_duckduckgo_results_and_skips_ads() {
         let html = r#"<html><body>
@@ -684,6 +927,31 @@ mod tests {
     fn detects_duckduckgo_bot_checks() {
         assert!(is_bot_check(r#"<div id="anomaly-modal"></div>"#));
         assert!(!is_bot_check("<div class=\"result\"></div>"));
+    }
+
+    #[test]
+    fn parses_duckduckgo_lite_results() {
+        let html = r#"<html><body><table>
+            <tr>
+                <td>1.</td>
+                <td><a rel="nofollow" href="https://www.rust-lang.org/" class='result-link'>Rust <b>Programming</b></a></td>
+            </tr>
+            <tr>
+                <td></td>
+                <td class='result-snippet'>A language <b>empowering</b> everyone.</td>
+            </tr>
+            <tr>
+                <td></td>
+                <td><span class='link'>rust-lang.org</span></td>
+            </tr>
+        </table></body></html>"#;
+
+        let hits = parse_duckduckgo_lite(html);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Rust Programming");
+        assert_eq!(hits[0].url, "https://www.rust-lang.org/");
+        assert_eq!(hits[0].snippet, "A language empowering everyone.");
+        assert_eq!(hits[0].engine, "ddg");
     }
 
     #[test]

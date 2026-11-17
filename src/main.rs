@@ -45,7 +45,7 @@ Examples:
   echo \"who invented unix\" | web-search
 
 Engines:
-  auto    Try ddg, then bing, then searx (default)
+  auto    Try ddg, then bing, then a configured searx (default)
   ddg     DuckDuckGo HTML results, no key needed
   bing    Bing web results, no key needed
   searx   SearXNG instance from --searx-url or SEARX_URL
@@ -321,6 +321,7 @@ fn main() {
         limit: args.limit,
         timeout: args.timeout,
         searx_url: args.searx_url.clone(),
+        verbose: args.verbose,
     };
 
     let result = match args.read.as_deref() {

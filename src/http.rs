@@ -19,6 +19,9 @@ pub struct Fetched {
 pub fn client(timeout: Duration) -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout(timeout)
+        // ureq defaults connect attempts to 30s and lets that override the
+        // overall timeout, so a blackholed host outlives `-t` without this.
+        .timeout_connect(timeout.min(Duration::from_secs(5)))
         .user_agent(USER_AGENT)
         .build()
 }

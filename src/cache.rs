@@ -1,10 +1,15 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
 use crate::engines::Hit;
+
+/// DuckDuckGo bot-checks are IP-based and temporary. After one, stay away from
+/// it for a while instead of hitting it on every search and extending the block.
+const DDG_COOLDOWN: Duration = Duration::from_secs(15 * 60);
 
 /// The last result list, so a result number can be read after the search that
 /// produced it. Without it, `web-search -r 2` would need the query again and
@@ -90,6 +95,38 @@ fn load_from(path: &Path) -> Option<Saved> {
     Some(Saved { results })
 }
 
+pub fn mark_ddg_blocked() {
+    let Some(path) = ddg_cooldown_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    let _ = fs::write(path, unix_now().to_string());
+}
+
+pub fn ddg_cooldown_remaining() -> Option<Duration> {
+    let path = ddg_cooldown_path()?;
+    let blocked_at: u64 = fs::read_to_string(path).ok()?.trim().parse().ok()?;
+    cooldown_remaining_at(unix_now(), blocked_at)
+}
+
+fn ddg_cooldown_path() -> Option<PathBuf> {
+    Some(path()?.with_file_name("ddg-blocked"))
+}
+
+fn cooldown_remaining_at(now: u64, blocked_at: u64) -> Option<Duration> {
+    let elapsed = now.saturating_sub(blocked_at);
+    let cooldown = DDG_COOLDOWN.as_secs();
+    (elapsed < cooldown).then(|| Duration::from_secs(cooldown - elapsed))
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +176,19 @@ mod tests {
     #[test]
     fn a_missing_cache_is_not_an_error() {
         assert!(load_from(Path::new("/nonexistent/web-search/last.json")).is_none());
+    }
+
+    #[test]
+    fn ddg_cooldown_expires() {
+        assert_eq!(
+            cooldown_remaining_at(1_000, 1_000),
+            Some(Duration::from_secs(900))
+        );
+        assert_eq!(
+            cooldown_remaining_at(1_600, 1_000),
+            Some(Duration::from_secs(300))
+        );
+        assert_eq!(cooldown_remaining_at(1_900, 1_000), None);
+        assert_eq!(cooldown_remaining_at(9_000, 1_000), None);
     }
 }
