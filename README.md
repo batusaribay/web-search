@@ -1,6 +1,6 @@
 # web-search
 
-A Rust CLI for web search and reading.
+A Rust CLI to search the web
 
 ![web-search in a terminal](preview.png)
 
