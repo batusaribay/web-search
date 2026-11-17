@@ -73,20 +73,22 @@ Reading keeps only that list; queries are not logged.
 | --- | --- |
 | `ddg` | DuckDuckGo HTML, with the lite endpoint as a fallback. |
 | `bing` | Bing RSS, pinned to the `en-US` market. |
-| `searx` | SearXNG JSON; set `--searx-url` or `SEARX_URL`. |
+| `searx` | SearXNG JSON; defaults to `search.lumy.live`, override with `--searx-url` or `SEARX_URL`. |
 | `brave` | Brave API; set `BRAVE_API_KEY`. |
 
-`auto` tries DuckDuckGo, then the Brave API when `BRAVE_API_KEY` is set, then
-Bing, then a SearXNG instance when `--searx-url` or `SEARX_URL` is set. Bing
-results that share no word with the query are dropped, so a zero-result page
-cannot turn into unrelated hits. Use `-v` to see which engine answered and why
-the others were skipped.
+`auto` tries DuckDuckGo, then the Brave API when `BRAVE_API_KEY` is set, then a
+SearXNG instance, then Bing. Bing results that share no word with the query are
+dropped, so a zero-result page cannot turn into unrelated hits. Use `-v` to see
+which engine answered and why the others were skipped.
 
 ### Limits
 
 The HTML endpoints are not APIs. They can return bot checks or rate limits; use
 the Brave API or a SearXNG instance for regular use. JavaScript-only pages still
 read poorly, and PDFs are reported as unreadable.
+
+The default SearXNG instance (`search.lumy.live`) sees your queries. Point
+`--searx-url` or `SEARX_URL` at your own instance if you prefer.
 
 If DuckDuckGo always times out on a VPN or Cloudflare WARP, run
 `warp-cli tunnel host add duckduckgo.com` to route it outside the tunnel, or

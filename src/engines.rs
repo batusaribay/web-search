@@ -12,12 +12,7 @@ use url::Url;
 use crate::cache;
 use crate::http;
 
-const SEARX_INSTANCES: [&str; 4] = [
-    "https://searx.be",
-    "https://search.inetol.net",
-    "https://baresearch.org",
-    "https://priv.au",
-];
+const SEARX_INSTANCES: [&str; 1] = ["https://search.lumy.live"];
 
 static RESULT: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("div.result").expect("valid result selector"));
@@ -91,14 +86,6 @@ pub fn search(engine: Engine, query: &str, options: &Options) -> Result<Vec<Hit>
     }
 }
 
-fn searx_configured(options: &Options) -> bool {
-    options
-        .searx_url
-        .as_ref()
-        .is_some_and(|url| !url.trim().is_empty())
-        || env::var("SEARX_URL").is_ok_and(|url| !url.trim().is_empty())
-}
-
 fn brave_configured() -> bool {
     env::var("BRAVE_API_KEY").is_ok_and(|key| !key.trim().is_empty())
 }
@@ -112,10 +99,8 @@ fn search_auto(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
     if brave_configured() {
         engines.push(Engine::Brave);
     }
+    engines.push(Engine::Searx);
     engines.push(Engine::Bing);
-    if searx_configured(options) {
-        engines.push(Engine::Searx);
-    }
 
     for engine in engines {
         if options.verbose {
