@@ -1,5 +1,6 @@
 use std::env;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -72,14 +73,28 @@ fn save_to(path: &Path, query: &str, hits: &[Hit]) -> Option<()> {
     });
     let text = serde_json::to_string_pretty(&data).ok()?;
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok()?;
-    }
-
     let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, text).ok()?;
+    write_private(&temporary, &text).ok()?;
     fs::rename(&temporary, path).ok()?;
     Some(())
+}
+
+/// The last query can be private, so keep it readable only by its owner.
+fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(text.as_bytes())?;
+    file.flush()
 }
 
 fn load_from(path: &Path) -> Option<Saved> {
@@ -126,10 +141,7 @@ fn write_timestamp(name: &str) {
     let Some(path) = state_path(name) else {
         return;
     };
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok();
-    }
-    let _ = fs::write(path, unix_now().to_string());
+    let _ = write_private(&path, &unix_now().to_string());
 }
 
 fn read_timestamp(name: &str) -> Option<u64> {

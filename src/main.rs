@@ -278,7 +278,7 @@ fn print_results(hits: &[Hit], args: &Args) -> io::Result<()> {
 
     if args.urls {
         for hit in hits {
-            writeln!(out, "{}", hit.url)?;
+            writeln!(out, "{}", sanitize(&hit.url))?;
         }
         return Ok(());
     }
@@ -292,10 +292,10 @@ fn print_results(hits: &[Hit], args: &Args) -> io::Result<()> {
         }
 
         let number = format!("{:>number_width$}.", index + 1);
-        writeln!(out, "{number} {}", hit.title)?;
-        writeln!(out, "   {}", hit.url)?;
+        writeln!(out, "{number} {}", sanitize(&hit.title))?;
+        writeln!(out, "   {}", sanitize(&hit.url))?;
 
-        for line in wrap(&hit.snippet, width.saturating_sub(3)) {
+        for line in wrap(&sanitize(&hit.snippet), width.saturating_sub(3)) {
             writeln!(out, "   {line}")?;
         }
     }
@@ -308,11 +308,19 @@ fn print_page(title: &str, text: &str) -> io::Result<()> {
     let mut out = stdout.lock();
 
     if !title.is_empty() {
-        writeln!(out, "{title}")?;
+        writeln!(out, "{}", sanitize(title))?;
         writeln!(out)?;
     }
 
-    writeln!(out, "{}", text.trim_end())
+    writeln!(out, "{}", sanitize(text).trim_end())
+}
+
+/// Page and result text comes from the web and must not be able to send
+/// escape sequences to the terminal.
+fn sanitize(text: &str) -> String {
+    text.chars()
+        .filter(|character| *character == '\n' || *character == '\t' || !character.is_control())
+        .collect()
 }
 
 fn main() {
@@ -500,6 +508,11 @@ mod tests {
     fn the_reader_fallback_can_be_disabled() {
         let args = parse_args_from(vec!["--no-reader".into(), "-r".into(), "1".into()]);
         assert!(!args.reader_fallback);
+    }
+
+    #[test]
+    fn strips_terminal_controls_from_output() {
+        assert_eq!(sanitize("safe \x1b[31mred\x07\nnext"), "safe [31mred\nnext");
     }
 
     #[test]

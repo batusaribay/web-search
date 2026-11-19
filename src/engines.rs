@@ -335,7 +335,9 @@ fn duckduckgo(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
                 Err(DdgError::BotCheck.message())
             }
             Err(DdgError::Transport(lite_error)) => {
-                cache::mark_ddg_blocked();
+                // A network failure is not a bot check. Recording a cooldown
+                // here would disable DuckDuckGo for an hour after a transient
+                // outage, so only a real block (above) is remembered.
                 Err(format!("html: {html_error}; lite: {lite_error}"))
             }
         },
@@ -725,6 +727,20 @@ fn clean_text(input: &str) -> String {
 
     let mut cleaned = String::with_capacity(text.len());
     for word in text.split_whitespace() {
+        let word: String = word
+            .chars()
+            .map(|character| {
+                if character.is_control() {
+                    ' '
+                } else {
+                    character
+                }
+            })
+            .collect();
+        let word = word.trim();
+        if word.is_empty() {
+            continue;
+        }
         if !cleaned.is_empty() {
             cleaned.push(' ');
         }

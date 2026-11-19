@@ -102,16 +102,16 @@ fn handle(result: Result<ureq::Response, ureq::Error>) -> Result<Fetched, String
                 });
             }
 
-            let mut body = String::new();
+            let mut bytes = Vec::new();
             response
                 .into_reader()
                 .take(MAX_RESPONSE_BYTES)
-                .read_to_string(&mut body)
+                .read_to_end(&mut bytes)
                 .map_err(|error| format!("could not read response: {error}"))?;
             Ok(Fetched {
                 url,
                 content_type,
-                body,
+                body: String::from_utf8_lossy(&bytes).into_owned(),
             })
         }
         Err(ureq::Error::Status(code, response)) => {
