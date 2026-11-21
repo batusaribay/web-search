@@ -4,103 +4,70 @@ A Rust CLI to search the web
 
 ![web-search in a terminal](preview.png)
 
+## Why it exists
+
+Search results live in a browser, wrapped in ads and scripts. This tool asks an
+engine, normalizes the answers, and prints titles, URLs, and snippets as plain
+text that pipes into `grep`, `jq`, or a reader.
+
 ## How it works
 
 1. The query comes from the arguments or from piped stdin.
 2. Each engine is fetched over TLS with `ureq` and `rustls`, a request timeout,
    and an 8 MiB response cap.
-3. DuckDuckGo HTML, Bing RSS, SearXNG JSON, and the Brave API are normalized into
-   the same result shape.
-4. Titles and snippets are cleaned and wrapped to `COLUMNS` (80 when unset).
+3. DuckDuckGo HTML, Bing RSS, SearXNG JSON, and the Brave API are normalized
+   into one result shape.
+4. Titles and snippets are cleaned and wrapped to `COLUMNS`, or 80 when it is
+   unset.
 5. `--read` fetches the selected page once and extracts article text with
-   `dom_smoothie`. If extraction is too small, it can retry through `r.jina.ai`
-   unless `--no-reader` is set.
+   `dom_smoothie`. If extraction is too small, it can retry through
+   `r.jina.ai` unless `--no-reader` is set.
 
 ## Usage
 
-### Commands
-
-| Command | Action |
-| --- | --- |
-| `web-search <query...>` | Search and print ranked results. |
-| `web-search -r <n\|url>` | Read result `n`, or a URL, as plain text. |
-| `web-search --urls <query...>` | Print only result URLs. |
-| `web-search --json <query...>` | Print JSON. |
-
-### Examples
-
 ```bash
-web-search rust async book
-web-search -n 5 --urls "rust 2024 edition"
-web-search --json "who invented unix" | jq -r '.[].url'
-echo "tauri vs egui" | web-search -n 5
-web-search -e brave -n 20 "embedded rust"
-web-search -r 2 rust async book
-web-search -r https://example.com/
+web-search [OPTIONS] <QUERY>...
+
+Options:
+  -n, --limit <N>       Number of results (default: 10, max: 50)
+  -e, --engine <NAME>   Search engine: auto, bing, ddg, searx, brave
+  -r, --read <N|URL>    Print result n, or the URL, as plain text
+      --no-reader       Do not retry client-side pages through r.jina.ai
+      --searx-url <URL> SearXNG base URL
+      --json            Print results as JSON
+      --urls            Print only the result URLs
+  -t, --timeout <SECS>  Request timeout in seconds (default: 15)
+  -v, --verbose         Print engine and timing to stderr
+  -h, --help            Print help
+  -V, --version         Print version
+
+Examples:
+  web-search rust async book
+  web-search -n 5 --urls "rust 2024 edition"
+  web-search --json "who invented unix" | jq -r '.[].url'
+  echo "tauri vs egui" | web-search -n 5
+  web-search -r 2 rust async book
+  web-search -r https://example.com/
 ```
 
-### Options
+## Notes
 
-| Option | Meaning |
-| --- | --- |
-| `-n, --limit <n>` | Number of results, 1–50 (default: 10). |
-| `-e, --engine <name>` | `auto`, `bing`, `ddg`, `searx`, or `brave`. |
-| `-r, --read <n\|url>` | Read a result number or URL as plain text. |
-| `--no-reader` | Do not retry client-side pages through `r.jina.ai`. |
-| `--searx-url <url>` | SearXNG base URL. |
-| `--json` | Print a JSON array. |
-| `--urls` | Print only result URLs. |
-| `-t, --timeout <secs>` | Per-request timeout (default: 15). |
-| `-v, --verbose` | Print engine and timing to stderr. |
-
-Exit codes: `0` for a completed search or read, `1` for a failed request, `2`
-for usage errors.
-
-### Reading a result
-
-```bash
-web-search -r 2 rust async book
-web-search -r 2                    # result 2 of the previous search
-web-search -r https://example.com/
-```
-
-The last result list is cached at `$XDG_CACHE_HOME/web-search/last.json`.
-Reading keeps only that list; queries are not logged.
-
-### Engines
-
-| Engine | Source |
-| --- | --- |
-| `ddg` | DuckDuckGo HTML, with the lite endpoint as a fallback. |
-| `bing` | Bing RSS, pinned to the `en-US` market. |
-| `searx` | SearXNG JSON; defaults to `search.lumy.live`, override with `--searx-url` or `SEARX_URL`. |
-| `brave` | Brave API; set `BRAVE_API_KEY`. |
-
-`auto` tries DuckDuckGo, then the Brave API when `BRAVE_API_KEY` is set, then a
-SearXNG instance, then Bing. Bing results that share no word with the query are
-dropped, so a zero-result page cannot turn into unrelated hits. Use `-v` to see
-which engine answered and why the others were skipped.
-
-### Limits
-
-The HTML endpoints are not APIs. They can return bot checks or rate limits; use
-the Brave API or a SearXNG instance for regular use. JavaScript-only pages still
-read poorly, and PDFs are reported as unreadable.
-
-The default SearXNG instance (`search.lumy.live`) sees your queries. Point
-`--searx-url` or `SEARX_URL` at your own instance if you prefer.
-
-If DuckDuckGo always times out on a VPN or Cloudflare WARP, run
-`warp-cli tunnel host add duckduckgo.com` to route it outside the tunnel, or
-use `--engine bing`.
-
-DuckDuckGo can also bot-check an IP after repeated searches. The check is
-temporary; `auto` reports it and falls back to Bing. After a bot check or a
-failed connection, DuckDuckGo is skipped for 65 minutes, because its block is a
-sliding window that needs about an hour of silence to clear. Requests are also
-spaced at least 3 seconds apart. To retry sooner, remove `ddg-blocked` from the
-cache directory (`~/.cache/web-search/` by default), but retrying resets the
-window.
+- `auto` tries DuckDuckGo, then Brave when `BRAVE_API_KEY` is set, then a
+  SearXNG instance, then Bing. Bing results that share no word with the query
+  are dropped. Use `-v` to see which engine answered.
+- The last result list is cached at `$XDG_CACHE_HOME/web-search/last.json`, so
+  `web-search -r 2` can reopen result 2 of the previous search. Queries are not
+  logged.
+- Exit codes: `0` for a completed search or read, `1` for a failed request, `2`
+  for usage errors.
+- The HTML endpoints are not APIs and can return bot checks or rate limits. Use
+  Brave or your own SearXNG instance for regular use. The default SearXNG
+  instance sees your queries; point `--searx-url` or `SEARX_URL` elsewhere if
+  that matters.
+- TLS is handled by `rustls`. Only the selected engine and result URL are
+  contacted. Response sizes and timeouts are bounded. No credentials, cookies,
+  configuration, or telemetry are read or sent. Unsafe code is forbidden by the
+  package lint configuration.
 
 ## Install
 
@@ -109,21 +76,6 @@ window.
 ```bash
 cargo install --git https://github.com/batusaribay/web-search.git --locked
 ```
-
-## Uninstall
-
-```bash
-cargo uninstall web-search
-```
-
-## Security
-
-- TLS is handled by `rustls`.
-- Only the selected engine and result URL are contacted.
-- `--no-reader` disables the optional `r.jina.ai` fallback.
-- Response sizes are capped and request timeouts are bounded.
-- No credentials, cookies, configuration, or telemetry are read or sent.
-- Unsafe code is forbidden by the package lint configuration.
 
 ## License
 

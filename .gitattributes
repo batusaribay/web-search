@@ -1,0 +1,5 @@
+# The project is Rust-only for GitHub language statistics.
+
+# Non-source files and the generated lockfile.
+Cargo.lock linguist-generated
+preview.png binary
