@@ -35,6 +35,7 @@ Options:
       --searx-url <URL> SearXNG base URL
       --json            Print results as JSON
       --urls            Print only the result URLs
+      --color <WHEN>    Color output: auto, always, or never [default: auto]
   -t, --timeout <SECS>  Request timeout in seconds (default: 15)
   -v, --verbose         Print engine and timing to stderr
   -h, --help            Print help
@@ -72,6 +73,11 @@ TLS is handled by `rustls`. Only the selected engine and result URL are
 contacted. Response sizes and timeouts are bounded. No credentials, cookies,
 configuration, or telemetry are read or sent. Unsafe code is forbidden by the
 package lint configuration.
+
+Color uses the terminal palette and ANSI attributes only. Body text inherits
+the terminal foreground, while result numbers, titles, and URLs use semantic
+roles. `--color never`, `NO_COLOR`, `CLICOLOR=0`, `TERM=dumb`, and non-terminal
+output all disable it. JSON and `--urls` are never colored.
 
 ## Install
 

@@ -2,6 +2,7 @@ mod cache;
 mod engines;
 mod http;
 mod read;
+mod theme;
 
 use std::env;
 use std::io::{self, IsTerminal, Read, Write};
@@ -10,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use engines::{Engine, Hit, Options};
 use serde_json::json;
+use theme::{ColorMode, Role, Theme};
 
 const DEFAULT_LIMIT: usize = 10;
 const MAX_LIMIT: usize = 50;
@@ -27,6 +29,7 @@ struct Args {
     timeout: Duration,
     searx_url: Option<String>,
     verbose: bool,
+    color: ColorMode,
 }
 
 fn usage(code: i32) -> ! {
@@ -59,6 +62,7 @@ Options:
       --searx-url <URL> SearXNG base URL (default: public instances)
       --json            Print results as JSON
       --urls            Print only the result URLs
+      --color <WHEN>    Color: auto, always, or never (default: auto)
   -t, --timeout <SECS>  Request timeout in seconds (default: {DEFAULT_TIMEOUT_SECS})
   -v, --verbose         Print engine and timing to stderr
   -h, --help            Print help
@@ -92,6 +96,7 @@ fn parse_args_from(arguments: Vec<String>) -> Args {
         timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
         searx_url: None,
         verbose: false,
+        color: ColorMode::Auto,
     };
     let mut words = Vec::new();
     let mut argv = arguments.into_iter();
@@ -175,6 +180,14 @@ fn parse_args_from(arguments: Vec<String>) -> Args {
                     usage(2);
                 }
                 args.timeout = Duration::from_secs(seconds);
+            }
+            "--color" => {
+                let value = take_value("--color");
+                args.color = ColorMode::parse(&value).unwrap_or_else(|| {
+                    eprintln!("error: unknown color mode: {value}");
+                    eprintln!("available modes: auto, always, never");
+                    usage(2);
+                });
             }
             "--json" => args.json = true,
             "--urls" => args.urls = true,
@@ -285,6 +298,7 @@ fn print_results(hits: &[Hit], args: &Args) -> io::Result<()> {
 
     let width = terminal_width();
     let number_width = hits.len().max(1).to_string().len();
+    let theme = Theme::from_env(args.color);
 
     for (index, hit) in hits.iter().enumerate() {
         if index > 0 {
@@ -292,8 +306,13 @@ fn print_results(hits: &[Hit], args: &Args) -> io::Result<()> {
         }
 
         let number = format!("{:>number_width$}.", index + 1);
-        writeln!(out, "{number} {}", sanitize(&hit.title))?;
-        writeln!(out, "   {}", sanitize(&hit.url))?;
+        writeln!(
+            out,
+            "{} {}",
+            theme.paint(Role::Accent, &number),
+            theme.paint(Role::Heading, &sanitize(&hit.title))
+        )?;
+        writeln!(out, "   {}", theme.paint(Role::Muted, &sanitize(&hit.url)))?;
 
         for line in wrap(&sanitize(&hit.snippet), width.saturating_sub(3)) {
             writeln!(out, "   {line}")?;
@@ -303,12 +322,12 @@ fn print_results(hits: &[Hit], args: &Args) -> io::Result<()> {
     Ok(())
 }
 
-fn print_page(title: &str, text: &str) -> io::Result<()> {
+fn print_page(title: &str, text: &str, theme: Theme) -> io::Result<()> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
     if !title.is_empty() {
-        writeln!(out, "{}", sanitize(title))?;
+        writeln!(out, "{}", theme.paint(Role::Heading, &sanitize(title)))?;
         writeln!(out)?;
     }
 
@@ -434,7 +453,7 @@ fn read_result(args: &Args, options: &Options, target: &str) -> Result<(), Strin
         page.title
     };
 
-    ignore_broken_pipe(print_page(&title, &page.text))
+    ignore_broken_pipe(print_page(&title, &page.text, Theme::from_env(args.color)))
 }
 
 fn is_url(value: &str) -> bool {
