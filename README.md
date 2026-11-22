@@ -42,8 +42,6 @@ Options:
   -V, --version         Print version
 ```
 
-Typical calls:
-
 ```bash
 web-search rust async book
 web-search -n 5 --urls "rust 2024 edition"
