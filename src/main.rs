@@ -39,14 +39,6 @@ fn usage(code: i32) -> ! {
 Usage: web-search [OPTIONS] <QUERY>...
        web-search -r <N|URL> [QUERY]...
 
-Examples:
-  web-search rust async book
-  web-search -n 5 --urls \"rust 2024 edition\"
-  web-search -r 2 rust async book
-  web-search -r 2                    # result 2 of the previous search
-  web-search -r https://example.com/
-  echo \"who invented unix\" | web-search
-
 Engines:
   auto    Try ddg, then brave (with a key), then searx, then bing
   ddg     DuckDuckGo HTML results, no key needed
@@ -67,6 +59,14 @@ Options:
   -v, --verbose         Print engine and timing to stderr
   -h, --help            Print help
   -V, --version         Print version
+
+Examples:
+  web-search rust async book
+  web-search -n 5 --urls \"rust 2024 edition\"
+  web-search -r 2 rust async book
+  web-search -r 2                    # result 2 of the previous search
+  web-search -r https://example.com/
+  echo \"who invented unix\" | web-search
 ",
         names = Engine::NAMES
     );
