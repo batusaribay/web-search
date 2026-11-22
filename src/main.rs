@@ -81,6 +81,9 @@ Examples:
 
 fn parse_args() -> Args {
     let arguments: Vec<String> = env::args().skip(1).collect();
+    if arguments.is_empty() && io::stdin().is_terminal() {
+        usage(0);
+    }
     parse_args_from(arguments)
 }
 
