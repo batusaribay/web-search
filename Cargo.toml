@@ -1,6 +1,6 @@
 [package]
 name = "web-search"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A Rust CLI to search the web"
@@ -19,6 +19,7 @@ path = "src/main.rs"
 dom_smoothie = "0.19.0"
 quick-xml = "0.42.0"
 scraper = "0.29.0"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", features = ["gzip"] }
 url = "2.5.8"

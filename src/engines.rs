@@ -9,6 +9,7 @@ use scraper::{Html, Selector};
 use serde_json::Value;
 use url::Url;
 
+use crate::browser;
 use crate::cache;
 use crate::http;
 
@@ -69,14 +70,39 @@ impl Engine {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backend {
+    Http,
+    Obscura,
+}
+
+impl Backend {
+    pub const NAMES: &str = "http, obscura";
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_lowercase().as_str() {
+            "http" => Some(Self::Http),
+            "obscura" | "browser" => Some(Self::Obscura),
+            _ => None,
+        }
+    }
+}
+
 pub struct Options {
     pub limit: usize,
     pub timeout: Duration,
     pub searx_url: Option<String>,
     pub verbose: bool,
+    pub backend: Backend,
+    pub obscura: String,
+    pub stealth: bool,
 }
 
 pub fn search(engine: Engine, query: &str, options: &Options) -> Result<Vec<Hit>, String> {
+    if options.backend == Backend::Obscura {
+        return browser::search(engine, query, options);
+    }
+
     match engine {
         Engine::Auto => search_auto(query, options),
         Engine::Bing => bing(query, options),
@@ -141,7 +167,7 @@ fn search_auto(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
     }
 }
 
-fn encode(query: &str) -> String {
+pub(crate) fn encode(query: &str) -> String {
     url::form_urlencoded::byte_serialize(query.as_bytes()).collect()
 }
 
@@ -488,7 +514,7 @@ fn query_terms(query: &str) -> Vec<String> {
 
 /// Bing fills zero-result pages with unrelated results. Keep only hits that
 /// share a meaningful word with the query.
-fn keep_relevant(query: &str, hits: Vec<Hit>) -> Vec<Hit> {
+pub(crate) fn keep_relevant(query: &str, hits: Vec<Hit>) -> Vec<Hit> {
     let terms = query_terms(query);
     if terms.is_empty() {
         return hits;

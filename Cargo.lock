@@ -690,6 +690,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]
@@ -941,11 +942,12 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "web-search"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dom_smoothie",
  "quick-xml",
  "scraper",
+ "serde",
  "serde_json",
  "ureq",
  "url",

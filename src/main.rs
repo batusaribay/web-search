@@ -1,3 +1,4 @@
+mod browser;
 mod cache;
 mod engines;
 mod http;
@@ -9,7 +10,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::process;
 use std::time::{Duration, Instant};
 
-use engines::{Engine, Hit, Options};
+use engines::{Backend, Engine, Hit, Options};
 use serde_json::json;
 use theme::{ColorMode, Role, Theme};
 
@@ -28,6 +29,9 @@ struct Args {
     reader_fallback: bool,
     timeout: Duration,
     searx_url: Option<String>,
+    backend: Backend,
+    obscura: Option<String>,
+    stealth: bool,
     verbose: bool,
     color: ColorMode,
 }
@@ -46,16 +50,23 @@ Engines:
   searx   SearXNG instance from --searx-url or SEARX_URL
   brave   Brave Search API, needs BRAVE_API_KEY
 
+Backends:
+  http      Plain HTTP requests with the engines above (default)
+  obscura   Render pages with the Obscura CLI; auto means ddg, then bing
+
 Options:
   -n, --limit <N>       Number of results (default: {DEFAULT_LIMIT}, max: {MAX_LIMIT})
   -e, --engine <NAME>   Search engine: {names}
   -r, --read <N|URL>    Print result n, or the URL, as plain text
       --no-reader       Do not retry client-side pages through r.jina.ai
       --searx-url <URL> SearXNG base URL (default: public instances)
+      --backend <NAME>  Fetch backend: http or obscura (default: http)
+      --obscura <PATH>  Obscura binary (default: obscura in PATH)
+      --stealth         Pass --stealth to Obscura
       --json            Print results as JSON
       --urls            Print only the result URLs
       --color <WHEN>    Color: auto, always, or never (default: auto)
-  -t, --timeout <SECS>  Request timeout in seconds (default: {DEFAULT_TIMEOUT_SECS})
+  -t, --timeout <SECS>  Timeout in seconds (default: {DEFAULT_TIMEOUT_SECS})
   -v, --verbose         Print engine and timing to stderr
   -h, --help            Print help
   -V, --version         Print version
@@ -67,6 +78,7 @@ Examples:
   web-search -r 2                    # result 2 of the previous search
   web-search -r https://example.com/
   echo \"who invented unix\" | web-search
+  web-search --backend obscura --stealth \"site blocked plain clients\"
 ",
         names = Engine::NAMES
     );
@@ -98,6 +110,9 @@ fn parse_args_from(arguments: Vec<String>) -> Args {
         reader_fallback: true,
         timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
         searx_url: None,
+        backend: Backend::Http,
+        obscura: None,
+        stealth: false,
         verbose: false,
         color: ColorMode::Auto,
     };
@@ -172,6 +187,23 @@ fn parse_args_from(arguments: Vec<String>) -> Args {
                 }
                 args.searx_url = Some(value);
             }
+            "--backend" => {
+                let value = take_value("--backend");
+                args.backend = Backend::parse(&value).unwrap_or_else(|| {
+                    eprintln!("error: unknown backend: {value}");
+                    eprintln!("available backends: {}", Backend::NAMES);
+                    usage(2);
+                });
+            }
+            "--obscura" => {
+                let value = take_value("--obscura");
+                if value.trim().is_empty() {
+                    eprintln!("error: --obscura must not be empty");
+                    usage(2);
+                }
+                args.obscura = Some(value);
+            }
+            "--stealth" => args.stealth = true,
             "-t" | "--timeout" => {
                 let value = take_value("--timeout");
                 let seconds: u64 = value.parse().unwrap_or_else(|_| {
@@ -211,6 +243,29 @@ fn parse_args_from(arguments: Vec<String>) -> Args {
         eprintln!("error: --read cannot be combined with --json or --urls");
         usage(2);
     }
+    if args.backend == Backend::Obscura {
+        if matches!(args.engine, Engine::Searx | Engine::Brave) {
+            eprintln!("error: the obscura backend supports only auto, ddg, and bing");
+            usage(2);
+        }
+        if args.searx_url.is_some() {
+            eprintln!("error: --searx-url does not apply to the obscura backend");
+            usage(2);
+        }
+        if !args.reader_fallback {
+            eprintln!("error: --no-reader does not apply to the obscura backend");
+            usage(2);
+        }
+    } else {
+        if args.stealth {
+            eprintln!("error: --stealth requires --backend obscura");
+            usage(2);
+        }
+        if args.obscura.is_some() {
+            eprintln!("error: --obscura requires --backend obscura");
+            usage(2);
+        }
+    }
 
     args.query = read_query(words);
 
@@ -219,6 +274,20 @@ fn parse_args_from(arguments: Vec<String>) -> Args {
     }
 
     args
+}
+
+impl Args {
+    fn obscura_binary(&self) -> String {
+        self.obscura
+            .clone()
+            .or_else(|| {
+                env::var("WEB_SEARCH_OBSCURA")
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+            })
+            .unwrap_or_else(|| "obscura".to_string())
+    }
 }
 
 /// A query comes from the arguments, or from stdin when it is piped in. There is
@@ -352,6 +421,9 @@ fn main() {
         timeout: args.timeout,
         searx_url: args.searx_url.clone(),
         verbose: args.verbose,
+        backend: args.backend,
+        obscura: args.obscura_binary(),
+        stealth: args.stealth,
     };
 
     let result = match args.read.as_deref() {
@@ -434,12 +506,17 @@ fn read_result(args: &Args, options: &Options, target: &str) -> Result<(), Strin
     };
 
     let started = Instant::now();
-    let read_options = read::ReadOptions {
-        timeout: args.timeout,
-        width: terminal_width(),
-        reader_fallback: args.reader_fallback,
-    };
-    let page = read::read(&url, &read_options).map_err(|message| format!("{url}: {message}"))?;
+    let page = if options.backend == Backend::Obscura {
+        browser::read_page(options, &url, terminal_width())
+    } else {
+        let read_options = read::ReadOptions {
+            timeout: args.timeout,
+            width: terminal_width(),
+            reader_fallback: args.reader_fallback,
+        };
+        read::read(&url, &read_options)
+    }
+    .map_err(|message| format!("{url}: {message}"))?;
 
     if args.verbose {
         eprintln!(
@@ -481,6 +558,22 @@ mod tests {
         assert_eq!(args.query.as_deref(), Some("rust async book"));
         assert_eq!(args.limit, DEFAULT_LIMIT);
         assert_eq!(args.engine, Engine::Auto);
+        assert_eq!(args.backend, Backend::Http);
+    }
+
+    #[test]
+    fn accepts_the_obscura_backend() {
+        let args = parse_args_from(vec![
+            "--backend=obscura".into(),
+            "--stealth".into(),
+            "--obscura".into(),
+            "/opt/obscura".into(),
+            "query".into(),
+        ]);
+        assert_eq!(args.backend, Backend::Obscura);
+        assert!(args.stealth);
+        assert_eq!(args.obscura.as_deref(), Some("/opt/obscura"));
+        assert_eq!(args.query.as_deref(), Some("query"));
     }
 
     #[test]
