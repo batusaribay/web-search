@@ -48,6 +48,11 @@ pub fn read(url: &str, options: &ReadOptions) -> Result<Page, String> {
             )
         });
     }
+    if !reader_allowed(&fetched.url) {
+        return local.and_then(require_text).map_err(|error| {
+            format!("{error}; reader fallback is disabled for private or credentialed URLs")
+        });
+    }
 
     match reader(&client, &fetched.url) {
         Ok(page) if page.text.chars().count() >= MIN_LOCAL_CHARS => Ok(page),
@@ -134,9 +139,49 @@ fn extract(html: &str, url: &str, width: usize) -> Result<Page, String> {
     })
 }
 
+fn reader_allowed(url: &str) -> bool {
+    let Ok(url) = url::Url::parse(url) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return false;
+    }
+    match url.host() {
+        Some(url::Host::Domain(domain)) => {
+            let domain = domain.to_ascii_lowercase();
+            domain.contains('.')
+                && !domain.ends_with(".localhost")
+                && !domain.ends_with(".local")
+                && !domain.ends_with(".internal")
+                && !domain.ends_with(".lan")
+                && !domain.ends_with(".home")
+        }
+        Some(url::Host::Ipv4(address)) => {
+            !(address.is_private()
+                || address.is_loopback()
+                || address.is_link_local()
+                || address.is_unspecified()
+                || address.is_broadcast())
+        }
+        Some(url::Host::Ipv6(address)) => {
+            !(address.is_loopback()
+                || address.is_unspecified()
+                || address.is_unique_local()
+                || address.is_unicast_link_local())
+        }
+        None => false,
+    }
+}
+
 /// The reader proxy renders client-side pages that return an empty shell to
 /// ordinary HTTP clients.
 fn reader(client: &ureq::Agent, url: &str) -> Result<Page, String> {
+    if !reader_allowed(url) {
+        return Err("refusing to send a private or credentialed URL to the reader proxy".into());
+    }
     let target = format!("https://r.jina.ai/{url}");
     let fetched = http::get_with(
         client,
@@ -474,6 +519,20 @@ mod tests {
             r#"<html><head><title>App</title></head><body><div id="root"></div></body></html>"#;
         let page = extract(html, "https://example.com/app", 80);
         assert!(page.is_err() || page.unwrap().text.is_empty());
+    }
+
+    #[test]
+    fn reader_fallback_does_not_expose_private_urls() {
+        assert!(reader_allowed("https://example.com/article?id=1"));
+        assert!(!reader_allowed(
+            "http://localhost:8080/private?token=secret"
+        ));
+        assert!(!reader_allowed("http://127.0.0.1/private"));
+        assert!(!reader_allowed("http://10.0.0.4/private"));
+        assert!(!reader_allowed("http://[::1]/private"));
+        assert!(!reader_allowed("http://intranet/private"));
+        assert!(!reader_allowed("https://user:password@example.com/private"));
+        assert!(!reader_allowed("file:///etc/passwd"));
     }
 
     #[test]

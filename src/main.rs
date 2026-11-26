@@ -1,5 +1,6 @@
 mod browser;
 mod cache;
+mod config;
 mod engines;
 mod http;
 mod read;
@@ -100,21 +101,55 @@ fn parse_args() -> Args {
 }
 
 fn parse_args_from(arguments: Vec<String>) -> Args {
+    let no_arguments = arguments.is_empty();
+    let asks_for_help = arguments
+        .iter()
+        .take_while(|argument| argument.as_str() != "--")
+        .any(|argument| matches!(argument.as_str(), "-h" | "--help" | "-V" | "--version"));
+    let config = if asks_for_help {
+        config::Config::default()
+    } else {
+        config::load().unwrap_or_else(|error| {
+            eprintln!("error: {error}");
+            usage(2);
+        })
+    };
+    let engine = config
+        .engine()
+        .unwrap_or_else(|error| {
+            eprintln!("error: {error}");
+            usage(2);
+        })
+        .unwrap_or(Engine::Auto);
+    let backend = config
+        .backend()
+        .unwrap_or_else(|error| {
+            eprintln!("error: {error}");
+            usage(2);
+        })
+        .unwrap_or(Backend::Http);
+    let color = config
+        .color()
+        .unwrap_or_else(|error| {
+            eprintln!("error: {error}");
+            usage(2);
+        })
+        .unwrap_or(ColorMode::Auto);
     let mut args = Args {
         query: None,
-        limit: DEFAULT_LIMIT,
-        engine: Engine::Auto,
+        limit: config.limit.unwrap_or(DEFAULT_LIMIT),
+        engine,
         json: false,
         urls: false,
         read: None,
         reader_fallback: true,
-        timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
-        searx_url: None,
-        backend: Backend::Http,
+        timeout: Duration::from_secs(config.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS)),
+        searx_url: config.searx_url,
+        backend,
         obscura: None,
         stealth: false,
         verbose: false,
-        color: ColorMode::Auto,
+        color,
     };
     let mut words = Vec::new();
     let mut argv = arguments.into_iter();
@@ -270,7 +305,7 @@ fn parse_args_from(arguments: Vec<String>) -> Args {
     args.query = read_query(words);
 
     if args.query.is_none() && args.read.is_none() {
-        usage(2);
+        usage(if no_arguments { 0 } else { 2 });
     }
 
     args
@@ -432,7 +467,7 @@ fn main() {
     };
 
     if let Err(message) = result {
-        eprintln!("error: {message}");
+        eprintln!("error: {}", sanitize(&message));
         process::exit(1);
     }
 }
@@ -537,7 +572,8 @@ fn read_result(args: &Args, options: &Options, target: &str) -> Result<(), Strin
 }
 
 fn is_url(value: &str) -> bool {
-    value.starts_with("https://") || value.starts_with("http://")
+    url::Url::parse(value)
+        .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
 }
 
 fn ignore_broken_pipe(result: io::Result<()>) -> Result<(), String> {
@@ -617,6 +653,14 @@ mod tests {
         let args = parse_args_from(vec!["--read=https://example.com/".into()]);
         assert!(is_url(args.read.as_deref().unwrap()));
         assert!(args.reader_fallback);
+    }
+
+    #[test]
+    fn only_absolute_web_urls_are_read_targets() {
+        assert!(is_url("HTTPS://example.com/"));
+        assert!(!is_url("https://"));
+        assert!(!is_url("file:///etc/passwd"));
+        assert!(!is_url("javascript:alert(1)"));
     }
 
     #[test]

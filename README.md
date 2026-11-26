@@ -67,39 +67,15 @@ web-search --backend obscura --stealth "site blocked plain clients"
 
 ## Notes
 
-`auto` tries DuckDuckGo, then Brave when `BRAVE_API_KEY` is set, then a SearXNG
-instance, then Bing. Bing results that share no word with the query are dropped.
-Use `-v` to see which engine answered.
+`auto` tries DuckDuckGo, then Brave when `BRAVE_API_KEY` is set, then SearXNG,
+then Bing. The obscura backend supports DuckDuckGo and Bing. The last result
+list is cached at `$XDG_CACHE_HOME/web-search/last.json`, which lets
+`web-search -r 2` reopen a previous result.
 
-`--backend obscura` uses the same `auto`, `ddg`, and `bing` names, but `auto`
-means DuckDuckGo, then Bing. SearXNG and Brave are not available through the
-browser backend, and `--searx-url` or `--no-reader` with it are usage errors.
-The binary comes from `--obscura`, `WEB_SEARCH_OBSCURA`, or `obscura` in `PATH`.
-When it is missing, the command exits 1 with install instructions.
+## Config
 
-The last result list is cached at `$XDG_CACHE_HOME/web-search/last.json`, so
-`web-search -r 2` can reopen result 2 of the previous search. Queries are not
-logged. Exit codes are `0` for a completed search or read, `1` for a failed
-request, and `2` for usage errors.
-
-The HTML endpoints are not APIs and can return bot checks or rate limits. Use
-Brave or your own SearXNG instance for regular use, or switch to `--backend
-obscura` when a plain client is refused. The default SearXNG instance sees your
-queries; point `--searx-url` or `SEARX_URL` elsewhere if that matters.
-
-TLS is handled by `rustls`. Only the selected engine and result URL are
-contacted. Response sizes and timeouts are bounded. No credentials, cookies,
-configuration, or telemetry are read or sent. Unsafe code is forbidden by the
-package lint configuration.
-
-With the obscura backend, Obscura performs the requests, executes page scripts,
-and keeps cookies for the lifetime of its process. `--stealth` is passed through
-to Obscura; its TLS-level impersonation only exists in Obscura's stealth build.
-
-Color uses the terminal palette and ANSI attributes only. Body text inherits
-the terminal foreground, while result numbers, titles, and URLs use semantic
-roles. `--color never`, `NO_COLOR`, `CLICOLOR=0`, `TERM=dumb`, and non-terminal
-output all disable it. JSON and `--urls` are never colored.
+Reads `~/.config/web-search/config.toml` if present. Flags override the file;
+defaults apply otherwise.
 
 ## Install
 

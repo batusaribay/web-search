@@ -50,6 +50,13 @@ pub fn path() -> Option<PathBuf> {
         return Some(PathBuf::from(directory).join("web-search/last.json"));
     }
 
+    #[cfg(windows)]
+    if let Some(directory) = env::var_os("LOCALAPPDATA")
+        && !directory.is_empty()
+    {
+        return Some(PathBuf::from(directory).join("web-search/last.json"));
+    }
+
     let home = env::var_os("HOME")?;
     if home.is_empty() {
         return None;
@@ -73,9 +80,19 @@ fn save_to(path: &Path, query: &str, hits: &[Hit]) -> Option<()> {
     });
     let text = serde_json::to_string_pretty(&data).ok()?;
 
-    let temporary = path.with_extension("json.tmp");
-    write_private(&temporary, &text).ok()?;
-    fs::rename(&temporary, path).ok()?;
+    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    if write_private(&temporary, &text).is_err() {
+        let _ = fs::remove_file(&temporary);
+        return None;
+    }
+    #[cfg(windows)]
+    if path.exists() {
+        let _ = fs::remove_file(path).ok()?;
+    }
+    if fs::rename(&temporary, path).is_err() {
+        let _ = fs::remove_file(&temporary);
+        return None;
+    }
     Some(())
 }
 
@@ -83,6 +100,11 @@ fn save_to(path: &Path, query: &str, hits: &[Hit]) -> Option<()> {
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        }
     }
 
     let mut options = OpenOptions::new();
@@ -93,6 +115,11 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
         options.mode(0o600);
     }
     let mut file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
     file.write_all(text.as_bytes())?;
     file.flush()
 }
@@ -189,10 +216,9 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!(
-            "web-search-cache-{}-{unique}.json",
-            std::process::id()
-        ))
+        std::env::temp_dir()
+            .join(format!("web-search-cache-{}-{unique}", std::process::id()))
+            .join("last.json")
     }
 
     #[test]
@@ -213,7 +239,23 @@ mod tests {
         assert_eq!(saved.results[0].title, "Rust");
         assert_eq!(saved.results[1].url, "https://doc.rust-lang.org/book/");
 
-        fs::remove_file(&path).ok();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(path.parent().unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+        fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
     #[test]

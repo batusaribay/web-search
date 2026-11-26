@@ -1,10 +1,15 @@
 use std::collections::HashSet;
-use std::process::Command;
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
 use crate::engines::{Engine, Hit, Options, encode, keep_relevant};
 use crate::read::Page;
+
+const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+const PROCESS_GRACE: Duration = Duration::from_secs(5);
 
 const DDG_JS: &str = r#"(()=>{const out=[];for(const r of document.querySelectorAll('div.result')){if(r.classList.contains('result--ad'))continue;const a=r.querySelector('a.result__a');if(!a)continue;let href=a.href;try{const q=new URL(href).searchParams.get('uddg');if(q)href=q}catch(e){}const title=(a.textContent||'').trim();if(!title||!href)continue;const s=r.querySelector('.result__snippet');out.push({title:title,url:href,snippet:s?(s.textContent||'').trim():''})}const body=document.body?document.body.textContent:'';return JSON.stringify({blocked:!!document.querySelector('#anomaly-modal')||/bots use DuckDuckGo|Unfortunately, bots/.test(body||''),results:out})})()"#;
 
@@ -163,16 +168,21 @@ fn fetch(options: &Options, url: &str, eval: &str, fast: bool) -> Result<String,
     }
     command.arg("--eval").arg(eval);
 
-    let output = command.output().map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            format!(
-                "could not run {:?}; install Obscura from https://github.com/h4ckf0r0day/obscura or pass --obscura <PATH>",
-                options.obscura
-            )
-        } else {
-            format!("could not run {:?}: {error}", options.obscura)
-        }
-    })?;
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                format!(
+                    "could not run {:?}; install Obscura from https://github.com/h4ckf0r0day/obscura or pass --obscura <PATH>",
+                    options.obscura
+                )
+            } else {
+                format!("could not run {:?}: {error}", options.obscura)
+            }
+        })?;
+    let output = wait_output(&mut child, options.timeout.saturating_add(PROCESS_GRACE))?;
 
     if !output.status.success() {
         let message = String::from_utf8_lossy(&output.stderr);
@@ -189,6 +199,80 @@ fn fetch(options: &Options, url: &str, eval: &str, fast: bool) -> Result<String,
         return Err("obscura returned no output".to_string());
     }
     Ok(stdout.to_string())
+}
+
+fn read_stream(mut stream: impl Read, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut output = Vec::new();
+    let mut overflow = false;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(output.len());
+        output.extend_from_slice(&buffer[..read.min(remaining)]);
+        overflow |= read > remaining;
+    }
+    Ok((output, overflow))
+}
+
+fn wait_output(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "could not capture obscura output".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "could not capture obscura errors".to_string())?;
+    let stdout_task = std::thread::spawn(move || read_stream(stdout, MAX_OUTPUT_BYTES));
+    let stderr_task = std::thread::spawn(move || read_stream(stderr, MAX_OUTPUT_BYTES));
+
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_task.join();
+                let _ = stderr_task.join();
+                return Err("obscura exceeded its time limit".to_string());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_task.join();
+                let _ = stderr_task.join();
+                return Err(format!("could not wait for obscura: {error}"));
+            }
+        }
+    };
+
+    let (stdout, stdout_overflow) = stdout_task
+        .join()
+        .map_err(|_| "could not read obscura output".to_string())?
+        .map_err(|error| format!("could not read obscura output: {error}"))?;
+    let (stderr, stderr_overflow) = stderr_task
+        .join()
+        .map_err(|_| "could not read obscura errors".to_string())?
+        .map_err(|error| format!("could not read obscura errors: {error}"))?;
+    if stdout_overflow || stderr_overflow {
+        return Err(format!(
+            "obscura output exceeded the {MAX_OUTPUT_BYTES}-byte limit"
+        ));
+    }
+
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 fn collect(raw: Vec<RawHit>, engine: &'static str) -> Vec<Hit> {
@@ -271,6 +355,29 @@ mod tests {
             snippet: snippet.to_string(),
             engine: "bing",
         }
+    }
+
+    #[test]
+    fn caps_process_output_without_blocking_the_writer() {
+        let (bytes, overflow) = read_stream(&b"abcdef"[..], 5).unwrap();
+        assert_eq!(bytes, b"abcde");
+        assert!(overflow);
+        let (bytes, overflow) = read_stream(&b"abcde"[..], 5).unwrap();
+        assert_eq!(bytes, b"abcde");
+        assert!(!overflow);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kills_a_process_that_exceeds_its_deadline() {
+        let mut child = Command::new("sleep")
+            .arg("5")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let error = wait_output(&mut child, Duration::from_millis(20)).unwrap_err();
+        assert!(error.contains("time limit"));
     }
 
     #[test]

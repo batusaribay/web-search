@@ -9,6 +9,7 @@ const MAX_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 pub const USER_AGENT: &str =
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0";
 
+#[derive(Debug)]
 pub struct Fetched {
     /// Final URL after redirects.
     pub url: String,
@@ -17,11 +18,20 @@ pub struct Fetched {
 }
 
 pub fn client(timeout: Duration) -> ureq::Agent {
+    client_with_redirects(timeout, 5)
+}
+
+pub fn client_without_redirects(timeout: Duration) -> ureq::Agent {
+    client_with_redirects(timeout, 0)
+}
+
+fn client_with_redirects(timeout: Duration, redirects: u32) -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout(timeout)
         // ureq defaults connect attempts to 30s and lets that override the
         // overall timeout, so a blackholed host outlives `-t` without this.
         .timeout_connect(timeout.min(Duration::from_secs(5)))
+        .redirects(redirects)
         .user_agent(USER_AGENT)
         .build()
 }
@@ -83,9 +93,30 @@ fn is_binary(content_type: &str) -> bool {
         || content_type.starts_with("video/")
 }
 
+fn read_capped(reader: impl Read, limit: u64) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("could not read response: {error}"))?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("response exceeded the {limit}-byte limit"));
+    }
+    Ok(bytes)
+}
+
 fn handle(result: Result<ureq::Response, ureq::Error>) -> Result<Fetched, String> {
     match result {
         Ok(response) => {
+            let status = response.status();
+            if !(200..300).contains(&status) {
+                let text = response.status_text();
+                return Err(if text.is_empty() {
+                    format!("HTTP {status}")
+                } else {
+                    format!("HTTP {status} {text}")
+                });
+            }
             let url = response.get_url().to_string();
             let content_type = response
                 .header("content-type")
@@ -102,12 +133,7 @@ fn handle(result: Result<ureq::Response, ureq::Error>) -> Result<Fetched, String
                 });
             }
 
-            let mut bytes = Vec::new();
-            response
-                .into_reader()
-                .take(MAX_RESPONSE_BYTES)
-                .read_to_end(&mut bytes)
-                .map_err(|error| format!("could not read response: {error}"))?;
+            let bytes = read_capped(response.into_reader(), MAX_RESPONSE_BYTES)?;
             Ok(Fetched {
                 url,
                 content_type,
@@ -143,6 +169,39 @@ mod tests {
         assert!(is_binary("image/png; charset=binary"));
         assert!(!is_binary("text/html; charset=utf-8"));
         assert!(!is_binary(""));
+    }
+
+    #[test]
+    fn rejects_truncated_responses_instead_of_parsing_them() {
+        assert_eq!(read_capped(&b"12345"[..], 5).unwrap(), b"12345");
+        let error = read_capped(&b"123456"[..], 5).unwrap_err();
+        assert!(error.contains("5-byte limit"));
+    }
+
+    #[test]
+    fn credential_requests_can_disable_redirects() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buffer = [0_u8; 1024];
+            let _ = stream.read(&mut buffer).expect("read request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .expect("write redirect");
+        });
+        let client = client_without_redirects(Duration::from_secs(5));
+        let error = get_with(
+            &client,
+            &format!("http://{address}/search"),
+            "application/json",
+            &[("X-Subscription-Token", "test-secret")],
+        )
+        .unwrap_err();
+        assert_eq!(error, "HTTP 302 Found");
+        server.join().expect("server");
     }
 
     #[test]

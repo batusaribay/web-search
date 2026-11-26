@@ -639,7 +639,9 @@ fn brave(query: &str, options: &Options) -> Result<Vec<Hit>, String> {
             "BRAVE_API_KEY is not set; create a key at https://brave.com/search/api/".to_string()
         })?;
 
-    let client = http::client(options.timeout);
+    // Do not let a redirect replay the subscription token to another origin.
+    // The fixed HTTPS API endpoint should not need redirects.
+    let client = http::client_without_redirects(options.timeout);
     let mut hits: Vec<Hit> = Vec::new();
     let mut seen = HashSet::new();
     let mut offset = 0;
