@@ -74,8 +74,17 @@ list is cached at `$XDG_CACHE_HOME/web-search/last.json`, which lets
 
 ## Config
 
-Reads `~/.config/web-search/config.toml` if present. Flags override the file;
-defaults apply otherwise.
+Optional. Reads `~/.config/web-search/config.toml` if present. Flags override the file; defaults apply otherwise.
+
+```toml
+limit = 10
+engine = "auto"
+backend = "http"
+timeout = 15
+color = "auto"
+
+# searx_url = "https://searx.example.com"
+```
 
 ## Install
 
